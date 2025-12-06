@@ -1,39 +1,68 @@
-import { pool } from '../config/db.js'; 
+import { supabase } from '../config/supabase.js';
 
 export async function createJob({ customerId, originalFileKey, sourceLang, targetLang, pagesEstimate, urgencyDays }) {
-  const { rows } = await pool.query(
-    `INSERT INTO jobs (
-        customer_id, 
-        original_file_key, 
-        source_lang, 
-        target_lang, 
-        pages_estimate, 
-        urgency_days
-     )
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, job_uuid, status, created_at, customer_id`,
-    [customerId, originalFileKey, sourceLang, targetLang, pagesEstimate, urgencyDays]
-  );
-  return rows[0];
+    const { data, error } = await supabase
+        .from('jobs')
+        .insert([{
+            customer_id: customerId,
+            original_file_key: originalFileKey,
+            source_lang: sourceLang,
+            target_lang: targetLang,
+            pages_estimate: pagesEstimate,
+            urgency_days: urgencyDays,
+            status: 'created'
+        }])
+        .select() 
+        .single(); 
+
+    if (error) {
+        console.error('Error creating job:', error);
+        throw error;
+    }
+    return data;
 }
 
 export async function getJobsByCustomer(customerId) {
-  const { rows } = await pool.query(
-    `SELECT 
-        id, 
-        job_uuid, 
-        status, 
-        source_lang, 
-        target_lang, 
-        pages_estimate, 
-        urgency_days, 
-        price, 
-        created_at,
-        translated_file_key -- Include translated file path for customer download
-     FROM jobs
-     WHERE customer_id = $1
-     ORDER BY created_at DESC`,
-    [customerId]
-  );
-  return rows;
+    const { data, error } = await supabase
+        .from('jobs')
+        .select('*')
+        .eq('customer_id', customerId)
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        console.error('Error fetching jobs by customer:', error);
+        throw error;
+    }
+    return data;
+}
+
+export async function getJobForCustomer(id, customerId) {
+    const { data, error } = await supabase
+        .from('jobs')
+        .select(`
+            id, 
+            job_uuid, 
+            status, 
+            source_lang, 
+            target_lang, 
+            pages_estimate, 
+            urgency_days, 
+            price, 
+            created_at, 
+            original_file_key, 
+            translated_file_key,
+            assigned_company_id,
+            updated_at 
+        `)
+        .eq('id', id)
+        .eq('customer_id', customerId) 
+        .single(); 
+
+    if (error) {
+        if (error.code === 'PGRST116') return null;
+        console.error("Error fetching job for customer:", error);
+        throw error;
+    }
+
+    return data;
 }

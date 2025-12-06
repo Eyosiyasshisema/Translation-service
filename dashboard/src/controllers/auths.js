@@ -1,96 +1,117 @@
-import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
-import { pool } from '../config/db.js'; 
+import { supabase } from '../config/supabase.js';
+
+async function fetchUserProfile(userId, userRole) {
+    const { data: userProfile, error: profileError } = await supabase
+        .from('users')
+        .select('id, name, email, role')
+        .eq('id', userId)
+        .single();
+    
+    if (profileError) {
+        console.error("Error fetching public user profile:", profileError);
+        return null;
+    }
+
+    let companyProfile = null;
+    if (userRole === 'company') {
+        const { data: companyData, error: companyError } = await supabase
+            .from('companies')
+            .select('id, business_name, languages_supported, rates, is_verified')
+            .eq('user_id', userId)
+            .single();
+        if (companyError && companyError.code !== 'PGRST116') { 
+            console.warn("Error fetching company profile:", companyError);
+        }
+        companyProfile = companyData || null;
+    }
+    return { ...userProfile, companyProfile };
+}
 
 export const register = async (req, res) => {
-  const client = await pool.connect();
-
-  try {
-    const { name, email, password, role = 'company', languagesSupported, rates } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: 'name, email and password required' });
+    const { email, password, name, role } = req.body; 
+    if (!name || !email || !password || (role !== 'company' && role !== 'admin')) {
+        return res.status(400).json({ error: 'Missing required fields or invalid role.' });
     }
-    await client.query('BEGIN');
-    const { rows: existing } = await client.query(
-      'SELECT id FROM users WHERE email = $1',
-      [email]
-    );
 
-    if (existing.length) {
-      await client.query('ROLLBACK'); 
-      return res.status(409).json({ error: 'User already exists' });
+    try {
+        const { data: authData, error: authError } = await supabase.auth.signUp({
+            email: email,
+            password: password,
+            options: {
+                data: { name: name, role: role } 
+            }
+        });
+
+        if (authError) return res.status(400).json({ error: authError.message });
+
+        const authUser = authData.user;
+        const { error: userInsertError } = await supabase
+            .from('users')
+            .insert({
+                id: authUser.id, 
+                name: name,
+                email: email,
+                role: role
+            });
+            
+        if (userInsertError) {
+            console.error("Failed to insert into public.users:", userInsertError);
+            return res.status(500).json({ error: 'Failed to create user profile record.' });
+        }
+        if (role === 'company') {
+            const { error: companyInsertError } = await supabase
+                .from('companies')
+                .insert({ 
+                    user_id: authUser.id, 
+                    business_name: name 
+                });
+            
+            if (companyInsertError) {
+                console.error("Failed to insert into public.companies:", companyInsertError);
+                return res.status(500).json({ error: 'Failed to create company profile details.' });
+            }
+        }
+        res.status(201).json({ message: "User registered!", user: { id: authUser.id, name, email, role } });
+
+    } catch (err) {
+        console.error('Register error', err);
+        res.status(500).json({ error: 'Server error' });
     }
-    const hash = await bcrypt.hash(password, 10);
-    const userResult = await client.query(
-      `INSERT INTO users (name, email, password_hash, role) 
-       VALUES ($1, $2, $3, $4) 
-       RETURNING id, name, email, role, created_at`,
-      [name, email, hash, role] 
-    );
-    const newUser = userResult.rows[0];
-    const companyResult = await client.query(
-      `INSERT INTO companies (user_id, business_name, languages_supported, rates) 
-       VALUES ($1, $2, $3, $4) 
-       RETURNING id, languages_supported, rates`,
-      [
-        newUser.id, 
-        name, 
-        JSON.stringify(languagesSupported || []), 
-        JSON.stringify(rates || {})
-      ]
-    );
-    await client.query('COMMIT');
-    const fullUser = {
-      ...newUser,
-      companyProfile: companyResult.rows[0]
-    };
-
-    res.status(201).json({ user: fullUser });
-
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Register error', err);
-    res.status(500).json({ error: 'Server error' });
-  } finally {
-    client.release();
-  }
 };
 
 export const login = async (req, res) => {
-  try {
     const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'email & password required' });
-    const { rows } = await pool.query(
-      'SELECT id, name, email, password_hash, role FROM users WHERE email = $1',
-      [email]
-    );
 
-    if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
+    try {
+        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+            email: email,
+            password: password,
+        });
 
-    const user = rows[0];
-    if (user.role !== 'company' && user.role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied. Only companies can login here.' });
+        if (authError) return res.status(401).json({ error: authError.message });
+
+        const session = authData.session;
+        const authUser = authData.user;
+        const userRole = authUser.user_metadata.role;
+        const fullProfile = await fetchUserProfile(authUser.id, userRole);
+
+        if (!fullProfile) {
+             return res.status(404).json({ error: 'User profile data missing.' });
+        }
+
+        res.json({
+            token: session.access_token,
+            user: {
+                id: fullProfile.id,
+                name: fullProfile.name,
+                email: fullProfile.email,
+                role: fullProfile.role,
+                companyProfile: fullProfile.companyProfile || null, 
+            },
+        });
+
+    } catch (err) {
+        console.error('Login error', err);
+        res.status(500).json({ error: 'Server error' });
     }
-
-    const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
-    const payload = { id: user.id, email: user.email, role: user.role };
-    const token = jwt.sign(payload, process.env.DASHBOARD_JWTSECRET, {
-      expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-    });
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
-    });
-  } catch (err) {
-    console.error('Login error', err);
-    res.status(500).json({ error: 'Server error' });
-  }
 };

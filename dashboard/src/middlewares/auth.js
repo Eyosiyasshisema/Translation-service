@@ -1,21 +1,31 @@
-import jwt from 'jsonwebtoken';
+import { supabase } from '../config/supabase.js';
 
-export default async function auth(req, res, next) {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: 'Missing token' });
+const authMiddleware = async (req, res, next) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+            return res.status(401).json({ error: 'Missing authentication token.' });
+        }
 
-    const token = authHeader.split(' ')[1];
-    const payload = jwt.verify(token, process.env.DASHBOARD_JWTSECRET );
+        const token = authHeader.split(' ')[1];
+        const { data: { user }, error } = await supabase.auth.getUser(token);
 
-    if(payload.role ==='company'){
-         req.user = payload;
+        if (error || !user) {
+            return res.status(401).json({ error: 'Invalid or expired token.' });
+        }
+        const role = user.user_metadata.role;
+        if (role !== 'company' && role !== 'admin') {
+            console.warn(`Unauthorized access attempt by user ID ${user.id} with role: ${role}`);
+            return res.status(403).json({ error: 'Access denied. You do not have permission to view the Dashboard.' });
+        }
+        req.user = user;
+        req.user.role = role;
+
+        next();
+    } catch (err) {
+        console.error('Auth Check Failed:', err);
+        res.status(500).json({ error: 'Authentication check failed due to a server issue.' });
     }
+};
 
-    else return res.status(403).json({error:"You do not have permisssion to access this resource"})
-    next();
-  } catch (err) {
-    console.error('Auth middleware error', err);
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-}
+export default authMiddleware;

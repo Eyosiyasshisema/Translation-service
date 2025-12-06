@@ -1,54 +1,63 @@
-import { getjobByStatus ,updateJobStatus ,getJobById } from "../models/job.js";
-import path from "path";
-import fs from "fs";
+import { getAvailableJobs, getJobByUuid, updateJobSubmission } from '../models/job.js';
+import { supabase, BUCKET_NAME } from '../config/supabase.js'; 
 
-export const getJobs = async (req,res) =>{
-try {
-    const status = req.query.status || 'created';
-    const result = await getjobByStatus(status);
-    return res.json(result);
-} catch (err) {
-    console.error('get job error', err); 
-    return res.status(500).json({ error: 'server error' });
-}
-}
-
-export const downloadJobFile = async (req,res) =>{
+export const getJobs = async (req, res) => {
     try {
-        const id= req.params.id;
-        const job= await getJobById(id);
-
-        if (job.length===0) return res.status(404).json({message: 'job doesnt exist'});
-
-        const originalFileKey= job[0].original_file_key;
-        const absolutePath= path.resolve(process.cwd(),'uploads',originalFileKey,);
-
-      if(fs.existsSync(absolutePath)){
-        res.download(absolutePath);
-      }
-      else return res.status(404).json({message: 'path doesnt exist'});
+        const availableJobs = await getAvailableJobs();
+        res.json({
+            success: true,
+            count: availableJobs.length,
+            jobs: availableJobs
+        });
 
     } catch (err) {
-        console.error('file download error', err); 
-    return res.status(500).json({ error: 'server error' });
+        console.error('Error in getJobs controller:', err);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Could not fetch available jobs due to a server error.' 
+        });
     }
-}
+};
 
-export const submitWork = async (req,res) =>{
-    try {
-        if(!req.file || !req.body.price) return res.status(400).json({message:'invalid request'})
-          const price= req.body.price;
-          const jobId= req.params.id;
-          const translated_file_key= req.file.path;
-          const newStatus=  'awaiting_payment' ;
+export const downloadJobFile = async (req, res) => {
+  try {
+    const jobUuid = req.params.id;
+    const job = await getJobByUuid(jobUuid);
 
-          await updateJobStatus(jobId,newStatus,price,translated_file_key)
+    if (!job) return res.status(404).json({ error: 'Job not found' });
 
-          return res.status(200).json({message:'job updated successfully'})
+    const { data, error } = await supabase.storage
+      .from(BUCKET_NAME)
+      .createSignedUrl(job.original_file_key, 900); 
 
-    } catch (err) {
-        console.error('file update error', err); 
-    return res.status(500).json({ error: 'server error' });
-    }
-}
+    if (error) throw error;
+    return res.redirect(data.signedUrl);
 
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Download failed' });
+  }
+};
+
+export const submitWork = async (req, res) => {
+  try {
+    if (!req.file || !req.body.price) return res.status(400).json({ error: 'Missing file or price' });
+
+    const jobUuid = req.params.id;
+    const filename = `${jobUuid}/translated_${Date.now()}.pdf`;
+    const filePath = `translated/${filename}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(BUCKET_NAME)
+      .upload(filePath, req.file.buffer, { contentType: req.file.mimetype });
+
+    if (uploadError) throw uploadError;
+    const updatedJob = await updateJobSubmission(jobUuid, req.body.price, filePath);
+
+    res.json({ success: true, job: updatedJob });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Submission failed' });
+  }
+};

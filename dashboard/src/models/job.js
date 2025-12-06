@@ -1,33 +1,58 @@
-import { pool } from '../config/db.js';
+import { supabase } from '../config/supabase.js';
 
-export async function getjobByStatus(status) {
-  const { rows } = await pool.query(
-    `SELECT id, job_uuid, status, source_lang, target_lang, pages_estimate, urgency_days, price, created_at
-     FROM jobs
-     WHERE status = $1
-     ORDER BY created_at DESC`,
-    [status]
-  );
-  return rows;
-} 
+export async function getJobByUuid(jobUuid) {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('*')
+    .eq('job_uuid', jobUuid)
+    .single();
 
-export async function updateJobStatus(jobId, newStatus, price, translated_file_key) {
-  const { rows } = await pool.query(
-    `UPDATE jobs 
-     SET status = $2, price = $3, translated_file_key = $4
-     WHERE id = $1
-     RETURNING id, job_uuid, status, price`,
-    [jobId, newStatus, price, translated_file_key]
-  );
-  return rows[0];
+  if (error) return null;
+  return data;
 }
 
-export async function getJobById(id) {
-  const { rows } = await pool.query(
-    `SELECT id, job_uuid, original_file_key, assigned_company_id, status, price, created_at
-     FROM jobs
-     WHERE id = $1`,
-    [id]
-  );
-  return rows;
+export async function getJobsByStatus(status) {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('*')
+    .eq('status', status) 
+    .order('created_at', { ascending: true }); 
+
+  if (error) {
+    console.error("Error fetching jobs by status:", error);
+    throw error; 
+  }
+  return data; 
+}
+
+export async function getAvailableJobs() {
+    const { data, error } = await supabase
+        .from('jobs')
+        .select('*')
+        .eq('status', 'created') 
+        .is('assigned_company_id', null) 
+        .order('created_at', { ascending: true });
+
+    if (error) {
+        console.error("Error fetching available jobs:", error);
+        throw error;
+    }
+    
+    return data;
+}
+
+export async function updateJobSubmission(jobId, price, translatedFileKey) {
+  const { data, error } = await supabase
+    .from('jobs')
+    .update({
+      status: 'awaiting_payment',
+      price: price,
+      translated_file_key: translatedFileKey
+    })
+    .eq('job_uuid', jobId) 
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
 }
