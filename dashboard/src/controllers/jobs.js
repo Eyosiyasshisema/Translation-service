@@ -40,24 +40,29 @@ export const downloadJobFile = async (req, res) => {
 };
 
 export const submitWork = async (req, res) => {
-  try {
-    if (!req.file || !req.body.price) return res.status(400).json({ error: 'Missing file or price' });
+    try {
+        if (!req.body || !req.file || !req.body.price) { 
+            return res.status(400).json({ error: 'Missing file or price' });
+        }
+        const { price } = req.body;
+        
+        const jobUuid = req.params.id;
+        const filename = `${jobUuid}/translated_${Date.now()}.pdf`; 
+        const filePath = `translated/${filename}`;
+        const { error: uploadError } = await supabase.storage
+          .from(BUCKET_NAME)
+          .upload(filePath, req.file.buffer, { contentType: req.file.mimetype });
 
-    const jobUuid = req.params.id;
-    const filename = `${jobUuid}/translated_${Date.now()}.pdf`;
-    const filePath = `translated/${filename}`;
+        if (uploadError) {
+             console.error('Supabase Upload Error:', uploadError);
+             throw uploadError;
+        }
+        const updatedJob = await updateJobSubmission(jobUuid, price, filePath);
 
-    const { error: uploadError } = await supabase.storage
-      .from(BUCKET_NAME)
-      .upload(filePath, req.file.buffer, { contentType: req.file.mimetype });
+        res.json({ success: true, job: updatedJob });
 
-    if (uploadError) throw uploadError;
-    const updatedJob = await updateJobSubmission(jobUuid, req.body.price, filePath);
-
-    res.json({ success: true, job: updatedJob });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Submission failed' });
-  }
+    } catch (err) {
+        console.error('Submission failed during processing:', err);
+        res.status(500).json({ error: 'Submission failed' });
+    }
 };
