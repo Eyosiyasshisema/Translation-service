@@ -1,5 +1,6 @@
 import express from 'express';
 import { 
+    fetchCompanies,
     createJob, 
     getJobsByCustomer, 
     getJobForCustomer, 
@@ -18,6 +19,16 @@ const JobSchema = z.object({
   pagesEstimate: z.number().int().positive().optional().default(1),
   urgencyDays: z.number().int().positive().optional().default(3),
 });
+
+router.get('/companies',authMiddleware, async(req,res)=>{
+      try {
+        const jobs = await fetchCompanies();
+        return res.json(jobs);
+    } catch (err) {
+        console.error('list companies error', err);
+        return res.status(500).json({ error: 'Server error' });
+    }
+})
 
 router.post('/upload-url', authMiddleware, async (req, res) => {
     try {

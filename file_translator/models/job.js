@@ -1,5 +1,19 @@
 import { supabase } from '../config/supabase.js';
 
+export async function fetchCompanies() {
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('role','company' ) 
+    .order('created_at', { ascending: true }); 
+
+  if (error) {
+    console.error("Error fetching companies:", error);
+    throw error; 
+  }
+  return data; 
+}
+
 export async function createJob({ customerId, originalFileKey, sourceLang, targetLang, pagesEstimate, urgencyDays }) {
     const { data, error } = await supabase
         .from('jobs')
